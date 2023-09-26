@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import sys
 import warnings
+from textwrap import dedent, indent
 from types import ModuleType
 from typing import AbstractSet
 from typing import Any
@@ -475,6 +476,137 @@ class HookCaller:
                         stacklevel=2,
                     )
                     break
+
+    def as_code(self) -> Tuple[str, Mapping]:
+        """Return python code that replicates this caller's behavior. Return also a mapping of the locals that would
+        be needed"""
+        firstresult = self.spec.opts.get("firstresult", False) if self.spec else False
+
+        only_new_style_wrappers = True
+        code = dedent("""
+        from typing import cast, Generator
+        exception = None
+        results = []
+        try:  # run impl and wrapper setup functions in a loop
+           teardowns = []
+           try:
+        """)
+        funcs = []
+        for i, hook_impl in enumerate(reversed(self._hookimpls)):
+            arg_string = ",".join(hook_impl.argnames)
+            funcs.append(hook_impl.function)
+            if firstresult:
+                code += indent("if not results:\n", "   " * 2)
+
+            if hook_impl.hookwrapper:
+                only_new_style_wrappers = False
+                code += indent(dedent(f"""\
+                    try:
+                        # If this cast is not valid, a type error is raised below,
+                        # which is the desired response.
+                        res = impl_funcs[{i}]({arg_string})
+                        wrapper_gen = cast(Generator[None, Result[object], None], res)
+                        next(wrapper_gen)  # first yield
+                        teardowns.append((wrapper_gen,))
+                    except StopIteration:
+                        _raise_wrapfail(wrapper_gen, "did not yield")
+                """), "   " * 3)
+            elif hook_impl.wrapper:
+                code += indent(dedent(f"""\
+                    try:
+                        # If this cast is not valid, a type error is raised below,
+                        # which is the desired response.
+                        res = impl_funcs[{i}]({arg_string})
+                        function_gen = cast(Generator[None, object, object], res)
+                        next(function_gen)  # first yield
+                        teardowns.append(function_gen)
+                    except StopIteration:
+                        _raise_wrapfail(function_gen, "did not yield")
+                """), "   " * 3)
+            else:
+                code += indent(dedent(f"""\
+                    res = impl_funcs[{i}]({arg_string})
+                    if res is not None:
+                        results.append(res)
+                """), "   " * 3)
+        code += dedent("""\
+           except BaseException as exc:
+                exception = exc
+        finally:
+        """)
+        # Fast path - only new-style wrappers, no Result.
+        if only_new_style_wrappers:
+            if firstresult:  # first result hooks return a single value
+                code += indent("result = results[0] if results else None\n", "   ")
+            else:
+                code += indent("result = results\n", "   ")
+
+            code += indent(dedent("""\
+            # run all wrapper post-yield blocks
+            for teardown in reversed(teardowns):
+                try:
+                    if exception is not None:
+                        teardown.throw(exception)  # type: ignore[union-attr]
+                    else:
+                        teardown.send(result)  # type: ignore[union-attr]
+                    # Following is unreachable for a well behaved hook wrapper.
+                    # Try to force finalizers otherwise postponed till GC action.
+                    # Note: close() may raise if generator handles GeneratorExit.
+                    teardown.close()  # type: ignore[union-attr]
+                except StopIteration as si:
+                    result = si.value
+                    exception = None
+                    continue
+                except BaseException as e:
+                    exception = e
+                    continue
+                _raise_wrapfail(teardown, "has second yield")  # type: ignore[arg-type]
+                
+            if exception is not None:
+                raise exception.with_traceback(exception.__traceback__)
+            else:
+                as_code_output.append(result)
+            """), "   ")
+
+
+        # Slow path - need to support old-style wrappers.
+        else:
+            if firstresult:  # first result hooks return a single value
+                code += indent("outcome = Result(results[0] if results else None, exception)\n", "   ")
+            else:
+                code += indent("outcome = Result(results, exception)\n", "   ")
+
+            code += indent(dedent("""\
+            # run all wrapper post-yield blocks
+            for teardown in reversed(teardowns):
+                if isinstance(teardown, tuple):
+                    try:
+                        teardown[0].send(outcome)
+                        _raise_wrapfail(teardown[0], "has second yield")
+                    except StopIteration:
+                        pass
+                else:
+                    try:
+                        if outcome._exception is not None:
+                            teardown.throw(outcome._exception)
+                        else:
+                            teardown.send(outcome._result)
+                        # Following is unreachable for a well behaved hook wrapper.
+                        # Try to force finalizers otherwise postponed till GC action.
+                        # Note: close() may raise if generator handles GeneratorExit.
+                        teardown.close()
+                    except StopIteration as si:
+                        outcome.force_result(si.value)
+                        continue
+                    except BaseException as e:
+                        outcome.force_exception(e)
+                        continue
+                    _raise_wrapfail(teardown, "has second yield")
+
+            as_code_output.append(outcome.get_result())
+            """), "   ")
+
+        return code, {'impl_funcs': funcs, 'firstresult': firstresult}
 
     def __call__(self, **kwargs: object) -> Any:
         """Call the hook.

@@ -1,9 +1,13 @@
 """
 Benchmarking and performance tests.
 """
+import dataclasses
+from textwrap import dedent
+from typing import Mapping, Any
+
 import pytest
 
-from pluggy import HookimplMarker
+from pluggy import HookimplMarker, HookCaller
 from pluggy import HookspecMarker
 from pluggy import PluginManager
 from pluggy._callers import _multicall
@@ -32,6 +36,52 @@ def hooks(request):
 @pytest.fixture(params=[10, 100], ids="wrappers={}".format)
 def wrappers(request):
     return [wrapper for i in range(request.param)]
+
+
+class NewPluginManager(PluginManager):
+    def do_compile(self):
+        """When you're ready to enter turbo mode, run this. hook attribute will be replaced and can't be restored"""
+
+        assert len(self.get_plugins()) == 5
+
+        @dataclasses.dataclass
+        class Caller:
+            plugins: list
+
+            def fun(self, hooks, nesting):
+
+                result = []
+                result.append(self.plugins[0].fun(hooks, nesting))
+                result.append(self.plugins[1].fun(hooks, nesting))
+                result.append(self.plugins[2].fun(hooks, nesting))
+                result.append(self.plugins[3].fun(hooks, nesting))
+                result.append(self.plugins[4].fun(hooks, nesting))
+
+                return result
+
+        self.hook = Caller(list(self.get_plugins()))
+
+
+class NewerPluginManager(PluginManager):
+
+    def do_compile(self):
+        """When you're ready to enter turbo mode, run this. hook attribute will be replaced and can't be restored"""
+        assert isinstance(self.hook.fun, HookCaller)
+        code, symbols = self.hook.fun.as_code()
+        compiled = compile(code, "", "exec")
+        locs = {'plugins': list(self.get_plugins())} | symbols
+
+        @dataclasses.dataclass
+        class Caller:
+            locs: Mapping
+            ccc: Any
+
+            def fun(self, hooks, nesting):
+                as_code_output =[]
+                exec(self.ccc, None, {'as_code_output': as_code_output, 'hooks': hooks, 'nesting': nesting} | self.locs)
+                return as_code_output[0]
+
+        self.hook = Caller(locs, compiled)
 
 
 def test_hook_and_wrappers_speed(benchmark, hooks, wrappers):
@@ -64,8 +114,13 @@ def test_hook_and_wrappers_speed(benchmark, hooks, wrappers):
         (100, 100, 0),
     ],
 )
-def test_call_hook(benchmark, plugins, wrappers, nesting):
-    pm = PluginManager("example")
+@pytest.mark.parametrize("impl", (
+        PluginManager,
+        NewPluginManager,
+        NewerPluginManager,
+))
+def test_call_hook(benchmark, plugins, wrappers, nesting, impl):
+    pm = impl("example")
 
     class HookSpec:
         @hookspec
@@ -102,4 +157,8 @@ def test_call_hook(benchmark, plugins, wrappers, nesting):
     for i in range(wrappers):
         pm.register(PluginWrap(i), name=f"wrap_plug_{i}")
 
+    if hasattr(pm, 'do_compile'):
+        pm.do_compile()
+
+    benchmark.group=f"{plugins}-{wrappers}"
     benchmark(pm.hook.fun, hooks=pm.hook, nesting=nesting)
