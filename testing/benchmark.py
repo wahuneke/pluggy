@@ -98,6 +98,11 @@ def test_hook_and_wrappers_speed(benchmark, hooks, wrappers):
     benchmark.pedantic(_multicall, setup=setup, rounds=10)
 
 
+@pytest.mark.parametrize("impl", (
+        PluginManager,
+        # NewPluginManager,
+        NewerPluginManager,
+))
 @pytest.mark.parametrize(
     ("plugins, wrappers, nesting"),
     [
@@ -110,17 +115,17 @@ def test_hook_and_wrappers_speed(benchmark, hooks, wrappers):
         (5, 1, 5),
         (5, 5, 1),
         (5, 5, 5),
-        (20, 20, 0),
-        (100, 100, 0),
         (20, 0, 0),
         (100, 0, 0),
+        (200, 0, 0),
+        (20, 0, 10),
+        (100, 0, 10),
+        (200, 0, 10),
+        (20, 20, 0),
+        (100, 100, 0),
     ],
+    ids=lambda i: str(i).zfill(3)
 )
-@pytest.mark.parametrize("impl", (
-        PluginManager,
-        NewPluginManager,
-        NewerPluginManager,
-))
 def test_call_hook(benchmark, plugins, wrappers, nesting, impl):
     pm = impl("example")
 
@@ -162,5 +167,5 @@ def test_call_hook(benchmark, plugins, wrappers, nesting, impl):
     if hasattr(pm, 'do_compile'):
         pm.do_compile()
 
-    benchmark.group=f"{plugins}-{wrappers}"
+    # benchmark.group=f"{plugins}-{wrappers}"
     benchmark(pm.hook.fun, hooks=pm.hook, nesting=nesting)
