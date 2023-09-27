@@ -504,8 +504,7 @@ class HookCaller:
                     try:
                         # If this cast is not valid, a type error is raised below,
                         # which is the desired response.
-                        res = impl_funcs[{i}]({arg_string})
-                        wrapper_gen = cast(Generator[None, Result[object], None], res)
+                        wrapper_gen = impl_funcs[{i}]({arg_string})
                         next(wrapper_gen)  # first yield
                         teardowns.append((wrapper_gen,))
                     except StopIteration:
@@ -516,8 +515,7 @@ class HookCaller:
                     try:
                         # If this cast is not valid, a type error is raised below,
                         # which is the desired response.
-                        res = impl_funcs[{i}]({arg_string})
-                        function_gen = cast(Generator[None, object, object], res)
+                        function_gen = impl_funcs[{i}]({arg_string})
                         next(function_gen)  # first yield
                         teardowns.append(function_gen)
                     except StopIteration:

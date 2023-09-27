@@ -112,6 +112,8 @@ def test_hook_and_wrappers_speed(benchmark, hooks, wrappers):
         (5, 5, 5),
         (20, 20, 0),
         (100, 100, 0),
+        (20, 0, 0),
+        (100, 0, 0),
     ],
 )
 @pytest.mark.parametrize("impl", (
